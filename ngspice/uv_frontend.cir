@@ -1,0 +1,25 @@
+* LTSPICE VERSION. Run, then add traces V(out) V(hp) V(uv_in).
+* UV-A query front end: photodiode -> transimpedance amp -> 1 Hz high-pass -> comparator -> uv_in
+* Slow light (sun, room lamps) is removed by the AC coupling; only fast torch flashes pass.
+* Opamp = behavioural single-pole micropower part (100 kHz GBW, rails 0..3 V).
+Vbat vcc 0 3.0
+Vb vb 0 0.3
+* photodiode current (A): 20 nA ambient + 100 Hz lamp flicker, sun step +500 nA (0.3..0.8 s),
+* three torch flashes of 300 nA, 50 ms wide at 1.0, 1.2, 1.4 s
+Iamb sj 0 DC 20n
+Iflk sj 0 SIN(0 15n 100)
+Isun sj 0 PWL(0 0 0.3 0 0.3001 500n 0.8 500n 0.8001 0 3 0)
+Itor sj 0 PWL(0 0 1.0 0 1.0001 300n 1.05 300n 1.0501 0 1.2 0 1.2001 300n 1.25 300n 1.2501 0 1.4 0 1.4001 300n 1.45 300n 1.4501 0 3 0)
+Cpd sj 0 20p
+Rf sj out 2Meg
+Cf sj out 2p
+Bop opx 0 V=min(max(1e4*(V(vb)-V(sj)),0),3)
+Rop opx out 1k
+Cop out 0 16u
+Chp out hp 100n
+Rhp hp vb 1.6Meg
+* Schmitt comparator: rises above 0.45 V, falls below 0.25 V (200 mV hysteresis > flicker)
+Bcmp uv_in 0 V=if(V(hp)>(0.45-0.20*(V(uv_in)>1.5)),3,0)
+Rcmp uv_in 0 1Meg
+.tran 100u 2.5 0 100u
+.end

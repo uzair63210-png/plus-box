@@ -1,0 +1,41 @@
+* PULSE-Box FSK transmitter: 433.92 MHz Colpitts (common-base) + varactor FSK
+* LTSPICE VERSION. Open with File>Open (All Files), press Run, then add traces V(col) V(out) I(Vbat) V(vc).
+* tx_en gates the supply, tx_data pulls the varactor.  LTspice / ngspice compatible.
+* NOTE: bit time is accelerated (5 us) so a few bits simulate quickly; real = 244 us (4.096 kbps).
+.param Tbit=5u  Tstart=8u
+Vbat vbat 0 3.0
+* tx_en (digital core output, 3 V logic)
+Ven en 0 PULSE(0 3 1n 1n 1n 1 2)
+Sen vbat vcc en 0 SWMOD
+.model SWMOD SW(Ron=5 Roff=1e9 Vt=1.5 Vh=0.1)
+Cvcc vcc 0 1n
+Cvcc2 vcc 0 100p
+* tx_data (digital core output 0..1.8 V) -- bit pattern 1 0 1 1 0 1
+Vdat dat 0 PWL(0 0 {Tstart} 0 {Tstart+1n} 1.8 {Tstart+Tbit} 1.8 {Tstart+Tbit+1n} 0 {Tstart+2*Tbit} 0 {Tstart+2*Tbit+1n} 1.8 {Tstart+4*Tbit} 1.8 {Tstart+4*Tbit+1n} 0 {Tstart+5*Tbit} 0 {Tstart+5*Tbit+1n} 1.8 {Tstart+6*Tbit} 1.8)
+* varactor control: 1.0 V (bit 0) .. 2.0 V (bit 1) ; 22k+10p ~ 0.2 us smoothing
+Bctl vcraw 0 V=1.0+V(dat)*0.5556
+Rf vcraw vc 22k
+Cf vc 0 10p
+* oscillator
+Rb1 vcc base 8.2k
+Rb2 base 0 6.8k
+Cb base 0 1n
+Rs1 vcc ln 0.7
+L1 ln col 8.28n
+Q1 col base em QRF
+C1 col em 27p
+C2 em 0 27p
+Lch em ee 100n
+Re ee 0 330
+* FSK varactor, loosely coupled to the tank
+Cc col vn 0.22p
+Dv 0 vn DVAR
+Rv vn vc 100k
+.model DVAR D(CJO=3p VJ=0.8 M=0.5 IS=1e-14 RS=1 BV=15)
+.model QRF NPN(IS=1e-15 BF=100 VAF=50 CJE=1p CJC=0.5p TF=25p RB=15 RE=1 RC=5)
+* antenna: 50 ohm load through 2 pF
+Cout col out 2p
+Rl out 0 50
+.options method=gear reltol=1e-3
+.tran 0 39u 0 40p
+.end

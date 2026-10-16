@@ -1,0 +1,26 @@
+* LTSPICE VERSION. Run, then add traces V(coil_in) V(env) V(wl_in).
+* Write-link receiver front end: 125 kHz OOK coil -> diode envelope -> comparator -> wl_in
+* Programmer sends 125 kHz bursts; pulse-interval coding (short = 0, long = 1).
+* LTspice / ngspice compatible (comparator is a behavioural source).
+Vbat vcc 0 3.0
+* induced coil voltage: 125 kHz carrier gated by the programmer (bursts 120 us wide, interval 500 / 1000 us)
+Vcar car 0 SIN(0 0.6 125k)
+Bgate src 0 V=V(car)*V(gate)
+Vgate gate 0 PWL(0 0 100u 0 101u 1 220u 1 221u 0 600u 0 601u 1 720u 1 721u 0 1600u 0 1601u 1 1720u 1 1721u 0 2100u 0 2101u 1 2220u 1 2221u 0 3000u 0)
+* tag coil: parallel LC tuned to 125 kHz (L=1 mH, C=1.62 nF), source resistance models coupling
+Rsrc src coil_in 2k
+Lcoil coil_in tank 1m
+Ctank coil_in 0 1.62n
+* tank is across coil: node coil_in is the tuned node (L to ground through sense)
+Rg tank 0 0.1
+* envelope detector: Schottky + RC (tau ~ 20 us, bursts are 120 us wide, 125 kHz period 8 us)
+D1 coil_in env DSCH
+Cenv env 0 1n
+Renv env 0 20k
+.model DSCH D(IS=3e-8 N=1.05 RS=20 CJO=1p VJ=0.34 M=0.5 BV=30)
+* comparator with fixed threshold 80 mV (real part: nano-power comparator + hysteresis)
+Bcmp wl_in 0 V=if(V(env)>0.08,3,0)
+Rcmp wl_in 0 1Meg
+.options reltol=1e-3
+.tran 0.2u 3200u 0 0.2u
+.end
