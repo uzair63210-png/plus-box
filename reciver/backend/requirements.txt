@@ -1,0 +1,8 @@
+numpy
+scikit-learn
+fastapi
+uvicorn
+streamlit
+pandas
+psycopg2-binary    # only for PostgreSQL
+pyserial           # only for the UART gateway bridge

@@ -1,0 +1,5 @@
+{
+  "cold-room-1": {"name": "Pune Cold Room 1", "lat": 18.6298, "lon": 73.7997},
+  "dock-a":      {"name": "Loading Dock A",   "lat": 18.6310, "lon": 73.8012},
+  "truck-17":    {"name": "Truck MH12-AB-1717 (gateway on vehicle)", "lat": 18.5204, "lon": 73.8567}
+}
