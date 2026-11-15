@@ -16,6 +16,7 @@ from .protocol import Packet, STAGES
 HB_PERIOD_S = 21600
 HB_JITTER_S = 255
 LOST_AFTER_S = 43800            # 2 x (6 h + jitter) - same constant as RTL LOST_TIMEOUT
+ALERT_LOST_AFTER_S = 1800       # tag in AGING/CRITICAL repeats every <=300 s: 30 min silence = lost (RTL LOST_TIMEOUT_ALERT)
 
 
 @dataclass
@@ -56,8 +57,9 @@ class Outcome:
 
 
 class RuleEngine:
-    def __init__(self, lost_after_s: float = LOST_AFTER_S):
+    def __init__(self, lost_after_s: float = LOST_AFTER_S, alert_lost_after_s: float = ALERT_LOST_AFTER_S):
         self.lost_after_s = lost_after_s
+        self.alert_lost_after_s = alert_lost_after_s
         self.tags: Dict[int, TagState] = {}
 
     def load(self, states):
@@ -136,12 +138,15 @@ class RuleEngine:
                                     f"{frm} -> AGING: shelf life entering AGING stage"))
 
     def sweep(self, now: float) -> List[Alert]:
-        """Flag tags silent for >= lost_after_s (2 missed heartbeats)."""
+        """Flag silent tags: 2 missed heartbeats (FRESH) or ~6 missed repeat packets (AGING/CRITICAL)."""
         alerts = []
         for st in self.tags.values():
-            if not st.lost and now - st.last_seen >= self.lost_after_s:
+            limit = self.alert_lost_after_s if st.stage > 0 else self.lost_after_s
+            if not st.lost and now - st.last_seen >= limit:
                 st.lost = True
+                silent = now - st.last_seen
+                txt = f"{int(silent // 60)} min" if silent < 7200 else f"{int(silent // 3600)} h"
+                why = "tag was in alert mode (repeats every <=5 min)" if st.stage > 0 else "2 missed heartbeats"
                 alerts.append(Alert(now, st.box_id, "LOST", "critical" if st.stage else "warning",
-                                    f"no packet for {int((now - st.last_seen) // 3600)} h "
-                                    f"(2 missed heartbeats); last stage {STAGES[st.stage]}"))
+                                    f"no packet for {txt} ({why}); last stage {STAGES[st.stage]}"))
         return alerts

@@ -1,8 +1,10 @@
 """Ingest pipeline: validate -> dedupe/rules -> persist -> ML prediction -> dispatch ranking."""
+import time
 from typing import List, Optional
 from .protocol import Packet, parse_frame, parse_host_record, FrameError, STAGES
 from .rules import RuleEngine, TagState
-from .shelf_life import ShelfLifeModel, decode_temp, PRODUCTS, SAMPLE_H
+from .shelf_life import (ShelfLifeModel, decode_temp, PRODUCTS, SAMPLE_H, VACCINE_MAX_C, VACCINE_FREEZE_C)
+from .rules import Alert
 from .db import Store
 
 
@@ -24,6 +26,7 @@ class Pipeline:
         self.stats = {"raw_ok": 0, "raw_bad_crc": 0, "duplicates": 0, "host_records": 0}
         self._series = {}                # box_id -> list of temps (heartbeat-rate)
         self._last_series_ts = {}
+        self._limit_state = {}
 
     def restore(self):
         """Reload rule-engine state and temperature series from the database after a restart."""
@@ -51,7 +54,35 @@ class Pipeline:
         return len(states)
 
     def product(self, box_id):
+        t = self.store.tag(box_id)                      # DB is the source of truth (shared with the bot)
+        if t and t["product"]:
+            return t["product"]
         return self.product_by_tag.get(box_id, self.default_product)
+
+    def _series_from_db(self, box_id):
+        temps, last = [], None
+        for r in self.store.series(box_id, limit=400):
+            if r["temp_c"] is None:
+                continue
+            if last is None or r["ts"] - last >= SAMPLE_H * 3600 * 0.9:
+                temps.append(r["temp_c"]); last = r["ts"]
+            else:
+                temps[-1] = max(temps[-1], r["temp_c"])
+        return temps
+
+    def set_product(self, box_id, product, ts=None):
+        """Change a box's product (changes its shelf-life model) and refresh its prediction now."""
+        if product not in PRODUCTS:
+            raise ValueError(f"unknown product {product!r}; choose from {sorted(PRODUCTS)}")
+        t = self.store.tag(box_id)
+        if not t:
+            raise KeyError(box_id)
+        self.store.set_product(box_id, product)
+        self.product_by_tag[box_id] = product
+        temps = self._series_from_db(box_id)
+        self._series[box_id] = temps
+        hours = self._store_prediction(box_id, ts or time.time(), product, t["stage"])
+        return hours
 
     # ---------------- ingest ----------------
     def ingest_raw(self, raw: bytes, ts: float, rssi: int = 0, gateway: Optional[str] = None):
@@ -84,6 +115,8 @@ class Pipeline:
         pred = None
         if temp is not None:
             pred = self._update_prediction(p.box_id, temp, ts)
+        if temp is not None:
+            out.alerts.extend(self._limit_alerts(p.box_id, self.product(p.box_id), temp, ts))
         for a in out.alerts:                 # alerts last: notifiers then see state + prediction + location
             self.store.add_alert(a)
         return {"accepted": True, "kind": out.kind, "gap": out.gap, "stage": STAGES[out.state.stage],
@@ -98,13 +131,32 @@ class Pipeline:
             self._last_series_ts[box_id] = ts
         else:
             self._series[box_id][-1] = max(self._series[box_id][-1], temp)   # keep the worst in slot
-        prod = self.product(box_id)
-        hours = self.model.predict_hours(self._series[box_id], prod, self.rules.tags[box_id].stage)
-        if self.rules.tags[box_id].stage == 2:
-            hours = 0.0                                  # CRITICAL: no remaining life
-        self.store.add_prediction(ts, box_id, hours, prod,
-                                  "gbr" if getattr(self.model, "model", None) is not None else "physics")
-        return hours
+        return self._store_prediction(box_id, ts, self.product(box_id), self.rules.tags[box_id].stage)
+
+    def _store_prediction(self, box_id, ts, prod, stage):
+        temps = self._series.get(box_id, [])
+        if stage == 2:                                    # CRITICAL: no remaining life
+            lo = mid = hi = 0.0
+        else:
+            lo, mid, hi = self.model.predict_range(temps, prod, stage)
+        self.store.add_prediction(ts, box_id, mid, prod,
+                                  "gbr" if getattr(self.model, "model", None) is not None else "physics", lo, hi)
+        return mid
+
+    def _limit_alerts(self, box_id, product, temp, ts):
+        """Product-specific hard limits (WHO PQS for vaccines). Alerts once per violation episode."""
+        out, active = [], self._limit_state.setdefault(box_id, set())
+        if product == "vaccine":
+            checks = {"FREEZE": temp <= VACCINE_FREEZE_C, "HEAT_LIMIT": temp > VACCINE_MAX_C}
+            msgs = {"FREEZE": f"sample {temp:.1f} C <= {VACCINE_FREEZE_C} C: freeze risk (WHO PQS limit). The tag's heat "
+                              "stage does NOT latch freezing - inspect/discard per SOP",
+                    "HEAT_LIMIT": f"sample {temp:.1f} C > {VACCINE_MAX_C:.0f} C (WHO PQS: no excursion above +20 C)"}
+            for k, bad in checks.items():
+                if bad and k not in active:
+                    active.add(k); out.append(Alert(ts, box_id, k, "critical", msgs[k]))
+                elif not bad:
+                    active.discard(k)
+        return out
 
     def sweep(self, now: float):
         alerts = self.rules.sweep(now)

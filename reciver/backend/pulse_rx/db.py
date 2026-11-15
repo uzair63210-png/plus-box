@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS locations(box_id INTEGER PRIMARY KEY, gateway TEXT, t
 CREATE TABLE IF NOT EXISTS tg_subscribers(chat_id INTEGER PRIMARY KEY, name TEXT, ts REAL);
 CREATE TABLE IF NOT EXISTS tg_state(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS predictions(id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, box_id INTEGER,
-    remaining_h REAL, product TEXT, model TEXT);
+    remaining_h REAL, product TEXT, model TEXT, low_h REAL, high_h REAL);
 """
 
 
@@ -37,6 +37,12 @@ class Store:
             self.conn.row_factory = sqlite3.Row
             with self.lock:
                 self.conn.executescript(SQLITE_DDL)
+                for col in ("low_h", "high_h"):          # upgrade databases created by earlier versions
+                    try:
+                        self.conn.execute(f"ALTER TABLE predictions ADD COLUMN {col} REAL")
+                        self.conn.commit()
+                    except sqlite3.OperationalError:
+                        pass
 
     def _q(self, sql):
         return sql.replace("?", "%s") if self.pg else sql
@@ -74,9 +80,9 @@ class Store:
         self.execute("INSERT INTO alerts(ts,box_id,kind,severity,detail) VALUES(?,?,?,?,?)",
                      (a.ts, a.box_id, a.kind, a.severity, a.detail))
 
-    def add_prediction(self, ts, box_id, hours, product, model):
-        self.execute("INSERT INTO predictions(ts,box_id,remaining_h,product,model) VALUES(?,?,?,?,?)",
-                     (ts, box_id, hours, product, model))
+    def add_prediction(self, ts, box_id, hours, product, model, low=None, high=None):
+        self.execute("INSERT INTO predictions(ts,box_id,remaining_h,product,model,low_h,high_h) VALUES(?,?,?,?,?,?,?)",
+                     (ts, box_id, hours, product, model, low, high))
 
     # --- reads
     def tags(self):
@@ -135,5 +141,15 @@ class Store:
         return r[0] if r else None
 
     def pred(self, box_id):
-        r = self.rows("SELECT remaining_h, product, model, ts FROM predictions WHERE box_id=? ORDER BY id DESC LIMIT 1", (box_id,))
+        r = self.rows("SELECT remaining_h, low_h, high_h, product, model, ts FROM predictions WHERE box_id=? ORDER BY id DESC LIMIT 1", (box_id,))
         return r[0] if r else None
+
+    def ack_alert(self, alert_id):
+        self.execute("UPDATE alerts SET acknowledged=1 WHERE id=?", (alert_id,))
+
+    def is_acked(self, alert_id):
+        r = self.rows("SELECT acknowledged FROM alerts WHERE id=?", (alert_id,))
+        return bool(r and r[0]["acknowledged"])
+
+    def set_product(self, box_id, product):
+        self.execute("UPDATE tags SET product=? WHERE box_id=?", (product, box_id))

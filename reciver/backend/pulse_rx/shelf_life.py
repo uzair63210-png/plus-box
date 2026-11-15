@@ -20,22 +20,48 @@ STAGE_MILD_CH = 60.0          # degC*h latched as AGING    (example register val
 STAGE_SEVERE_CH = 200.0       # degC*h latched as CRITICAL
 STORAGE_C = 5.0               # temperature assumed for the remaining life
 SAMPLE_H = 6.0                # heartbeat period of the tag
-PRODUCTS = {                  # nominal life at T_REF (hours), Q10
-    "dairy":   (14 * 24, 3.0),
+# nominal life at T_REF (hours), Q10.   EVIDENCE STATUS:
+#  dairy   - Q10 5.0 from published pasteurised-milk studies (shelf life 30/24/12 d at 5/7/10 C; 28 -> 6 d from 5 to
+#            11 C; 72/36/24 h at 13/15/19 C => Q10 ~5-6 below 20 C). Nominal 14 d = commercial milk (12-21 d, Cornell).
+#  vaccine - Q10 3.5 derived from the WHO PQS default MKT activation energy 83.144 kJ/mol near 5 C. Nominal life is a
+#            placeholder: real vaccines differ by product/VVM class - set per product from the manufacturer's data.
+#  frozen, packaged - UNVERIFIED planning assumptions. Replace with product data before relying on them.
+PRODUCTS = {
+    "dairy":   (14 * 24, 5.0),
     "frozen":  (180 * 24, 2.5),
-    "vaccine": (365 * 24, 2.0),
+    "vaccine": (365 * 24, 3.5),
     "packaged": (120 * 24, 2.2),
 }
+RATE_CAP_C = 35.0             # microbial growth saturates; do not extrapolate Q10 beyond this temperature
+
+
+# sensor_type -> (scale, offset): degC = code * scale + offset.
+# 0/1 = legacy 1:1 (code == degC, cannot represent below 0 C, see tag testbench: 8 = cold room, 30 = hot truck).
+# 2   = 0.5 C steps from -40 C (range -40..+87.5 C): REQUIRED to see freezing. Set the tag's sensor_type to 2.
+SENSOR_CAL = {0: (1.0, 0.0), 1: (1.0, 0.0), 2: (0.5, -40.0)}
 
 
 def decode_temp(code: int, sensor_type: int = 0) -> float:
-    """Tag sends an 8-bit sample. Default calibration: code == degrees C (see tag testbench
-    where 8 = cold room, 30 = hot truck). Override per sensor_type if the sensor differs."""
-    return float(code)
+    scale, offset = SENSOR_CAL.get(sensor_type, (1.0, 0.0))
+    return float(code) * scale + offset
+
+
+def mkt_c(temps_c, ea_j_mol=83144.0):
+    """Mean kinetic temperature (degC), equal-interval samples. WHO PQS default Ea = 83.144 kJ/mol.
+    Heat-weighted; says nothing about freezing."""
+    R = 8.314462618
+    t = np.asarray(temps_c, dtype=float) + 273.15
+    return float((ea_j_mol / R) / -np.log(np.mean(np.exp(-ea_j_mol / (R * t)))) - 273.15)
+
+
+# WHO PQS vaccine storage limits (per-sample checks; 6-hourly samples cannot verify the 1-hour freeze rule)
+VACCINE_MAX_C = 20.0          # "no excursion must exceed +20 C for any amount of time"
+VACCINE_FREEZE_C = -0.5       # "no excursion below -0.5 C for any amount of time"
 
 
 def rate(temp_c, q10):
-    return np.power(q10, (np.asarray(temp_c, dtype=float) - T_REF_C) / 10.0)
+    t = np.minimum(np.asarray(temp_c, dtype=float), RATE_CAP_C)
+    return np.power(q10, (t - T_REF_C) / 10.0)
 
 
 def consumed_fraction(temps_c, dt_h, nominal_h, q10):
@@ -98,10 +124,19 @@ class ShelfLifeModel:
 
     def fit(self, X, y):
         from sklearn.ensemble import GradientBoostingRegressor
-        self.model = GradientBoostingRegressor(n_estimators=150, max_depth=2, learning_rate=0.03,
-                                               subsample=0.8, loss="absolute_error",
-                                               random_state=0).fit(X, y - self._phys_frac(X))
+        resid = y - self._phys_frac(X)
+        mk = lambda **kw: GradientBoostingRegressor(n_estimators=150, max_depth=2, learning_rate=0.03,
+                                                    subsample=0.8, random_state=0, **kw).fit(X, resid)
+        self.model = mk(loss="absolute_error")
+        self.lo = mk(loss="quantile", alpha=0.1)         # 10th / 90th percentile of the residual =>
+        self.hi = mk(loss="quantile", alpha=0.9)         # an ~80 % prediction interval
         return self
+
+    def predict_range_frac(self, X):
+        base = self._phys_frac(X)
+        lo = np.clip(base + self.lo.predict(X), 0, 1); hi = np.clip(base + self.hi.predict(X), 0, 1)
+        mid = self.predict_frac(X)
+        return np.minimum(lo, mid), mid, np.maximum(hi, mid)
 
     def predict_frac(self, X):
         return np.clip(self._phys_frac(X) + self.model.predict(X), 0.0, 1.0)
@@ -117,3 +152,13 @@ class ShelfLifeModel:
             return physics_remaining_h(temps_c or [STORAGE_C], nominal_h, q10)
         x = features(temps_c, nominal_h, q10, stage).reshape(1, -1)
         return float(self.predict_frac(x)[0] * nominal_h)
+
+    def predict_range(self, temps_c, product="dairy", stage=0):
+        """(low, mid, high) remaining hours; ~80 % interval when the model is trained, else (mid, mid, mid)."""
+        mid = self.predict_hours(temps_c, product, stage)
+        if self.model is None or len(temps_c) < 2:
+            return mid, mid, mid
+        nominal_h, q10 = PRODUCTS[product]
+        x = features(temps_c, nominal_h, q10, stage).reshape(1, -1)
+        lo, m, hi = (float(v[0]) * nominal_h for v in self.predict_range_frac(x))
+        return lo, m, hi
