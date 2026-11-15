@@ -1,4 +1,6 @@
 """Streamlit dashboard.   streamlit run dashboard.py      (env DATABASE_URL, same DB as the backend)"""
+import json
+import os
 import time
 import pandas as pd
 import streamlit as st
@@ -43,7 +45,7 @@ c[2].metric("AGING", sum(t["stage"] == 1 for t in tags))
 c[3].metric("LOST", sum(bool(t["lost"]) for t in tags))
 c[4].metric("Missed packets", sum(t["missed"] for t in tags))
 
-tab1, tab2, tab3 = st.tabs(["Dispatch priority (FEFO)", "Alerts", "Temperature history"])
+tab1, tab2, tab3, tab4 = st.tabs(["Dispatch priority (FEFO)", "Alerts", "Temperature history", "Map"])
 with tab1:
     if rank:
         df = pd.DataFrame(rank)[["rank", "box_id", "action", "stage", "remaining_days", "product"]]
@@ -60,7 +62,8 @@ with tab2:
         a["time"] = pd.to_datetime(a["ts"], unit="s")
         a["box_id"] = a["box_id"].map(lambda v: f"{v:08X}")
         sev = st.multiselect("Severity", ["critical", "warning", "info"], default=["critical", "warning"])
-        st.dataframe(a[a.severity.isin(sev)][["time", "box_id", "kind", "severity", "detail"]],
+        a["acked"] = a["acknowledged"].map(lambda v: "✅" if v else "")
+        st.dataframe(a[a.severity.isin(sev)][["time", "box_id", "kind", "severity", "acked", "detail"]],
                      use_container_width=True, hide_index=True)
 with tab3:
     if tags:
@@ -70,6 +73,20 @@ with tab3:
             s["time"] = pd.to_datetime(s["ts"], unit="s")
             st.line_chart(s.set_index("time")["temp_c"])
             st.caption("Per-unit temperature series + latched stage = evidence for spoilage disputes.")
+
+with tab4:
+    gw = json.load(open("gateways.json")) if os.path.exists("gateways.json") else {}
+    pts = []
+    for t in tags:
+        loc = pl.store.get_location(t["box_id"])
+        g = gw.get(loc["gateway"]) if loc else None
+        if g:
+            pts.append({"lat": g["lat"], "lon": g["lon"], "box": f"{t['box_id']:08X}", "receiver": g["name"]})
+    if pts:
+        st.map(pd.DataFrame(pts), latitude="lat", longitude="lon")
+        st.dataframe(pd.DataFrame(pts)[["box", "receiver"]], hide_index=True, use_container_width=True)
+    else:
+        st.info("No box locations yet. Pass --gateway <id> to bridge.py and describe receivers in gateways.json.")
 
 if live:
     time.sleep(10)

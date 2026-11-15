@@ -11,15 +11,24 @@ from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # find ./pulse_rx wherever you run from
 os.chdir(os.path.dirname(os.path.abspath(__file__)))             # keep pulse_rx.db next to the app
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from pulse_rx.db import Store
+from pulse_rx.security import key_ok
 from pulse_rx.service import Pipeline
 
 pipeline = Pipeline(Store())
 pipeline.restore()
-app = FastAPI(title="PULSE-Box receiver backend", version="1.0")
+app = FastAPI(title="PULSE-Box receiver backend", version="1.1")
+API_KEY = os.environ.get("PULSE_API_KEY")
+
+
+def auth(x_api_key: Optional[str] = Header(default=None)):
+    """Every endpoint except /health needs header  X-API-Key: <PULSE_API_KEY>  when the variable is set."""
+    if not key_ok(x_api_key, API_KEY):
+        raise HTTPException(401, "invalid or missing X-API-Key")
+
 
 
 class RawIn(BaseModel):
@@ -43,6 +52,8 @@ def _sweeper():
 
 @app.on_event("startup")
 def _start():
+    if not API_KEY:
+        print("WARNING: PULSE_API_KEY is not set - the API is open to anyone who can reach this port.")
     threading.Thread(target=_sweeper, daemon=True).start()
     if os.environ.get("TELEGRAM_BOT_TOKEN"):             # Telegram alerts run inside the same process
         from pulse_rx.telegram_bot import Notifier
@@ -52,7 +63,7 @@ def _start():
         print("Telegram bot started")
 
 
-@app.post("/ingest/raw")
+@app.post("/ingest/raw", dependencies=[Depends(auth)])
 def ingest_raw(body: RawIn):
     try:
         raw = bytes.fromhex(body.frame_hex)
@@ -61,7 +72,7 @@ def ingest_raw(body: RawIn):
     return pipeline.ingest_raw(raw, body.ts or time.time(), body.rssi, body.gateway)
 
 
-@app.post("/ingest/host")
+@app.post("/ingest/host", dependencies=[Depends(auth)])
 def ingest_host(body: HostIn):
     try:
         rec = bytes.fromhex(body.record_hex)
@@ -70,27 +81,27 @@ def ingest_host(body: HostIn):
     return pipeline.ingest_host_record(rec, body.ts or time.time(), body.gateway)
 
 
-@app.get("/tags")
+@app.get("/tags", dependencies=[Depends(auth)])
 def tags():
     return pipeline.store.tags()
 
 
-@app.get("/alerts")
+@app.get("/alerts", dependencies=[Depends(auth)])
 def alerts(limit: int = 200):
     return pipeline.store.alerts(limit)
 
 
-@app.get("/dispatch")
+@app.get("/dispatch", dependencies=[Depends(auth)])
 def dispatch():
     return pipeline.dispatch_ranking()
 
 
-@app.get("/series/{box_id}")
+@app.get("/series/{box_id}", dependencies=[Depends(auth)])
 def series(box_id: int, limit: int = 500):
     return pipeline.store.series(box_id, limit)
 
 
-@app.get("/stats")
+@app.get("/stats", dependencies=[Depends(auth)])
 def stats():
     return pipeline.stats
 

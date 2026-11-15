@@ -5,6 +5,7 @@
 """
 import argparse
 import json
+import os
 import time
 import urllib.request
 
@@ -65,7 +66,8 @@ def main():
         else:
             req = urllib.request.Request(a.api.rstrip("/") + "/ingest/host",
                                          data=json.dumps({"record_hex": rec.hex(), "gateway": a.gateway}).encode(),
-                                         headers={"Content-Type": "application/json"})
+                                         headers={"Content-Type": "application/json",
+                                                  "X-API-Key": os.environ.get("PULSE_API_KEY", "")})
             print(urllib.request.urlopen(req, timeout=5).read().decode())
 
 

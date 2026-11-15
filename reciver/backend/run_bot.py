@@ -27,7 +27,7 @@ a = ap.parse_args()
 
 if not os.environ.get("TELEGRAM_BOT_TOKEN"):
     sys.exit("Set TELEGRAM_BOT_TOKEN first (create a bot with @BotFather).")
-pl = Pipeline(Store(a.db), train_if_missing=False)
+pl = Pipeline(Store(a.db), train_if_missing=True)   # trains the shelf-life model (~10 s) for /product
 bot = Notifier(pl)
 if not (bot.passcode or bot.allowed):
     print("WARNING: set PULSE_BOT_PASSCODE (or TELEGRAM_ALLOWED_CHATS) - nobody can subscribe otherwise.")

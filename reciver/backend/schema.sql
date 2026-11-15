@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS alerts (
 );                                                      -- retained as dispute evidence
 CREATE TABLE IF NOT EXISTS predictions (
     id BIGSERIAL PRIMARY KEY, ts DOUBLE PRECISION NOT NULL, box_id BIGINT NOT NULL,
-    remaining_h REAL, product TEXT, model TEXT
+    remaining_h REAL, product TEXT, model TEXT, low_h REAL, high_h REAL
 );
 
 CREATE TABLE IF NOT EXISTS locations (box_id BIGINT PRIMARY KEY, gateway TEXT, ts DOUBLE PRECISION);
