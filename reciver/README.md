@@ -34,8 +34,9 @@ Windows quick start: keep `app.py` and the `pulse_rx/` folder together, `pip ins
 ```bash
 pip install -r backend/requirements.txt
 cd backend
-python tests/test_core.py                       # 13 tests
-python tests/test_telegram.py                   # 3 bot tests (fake Telegram server)
+python tests/test_core.py                       # 15 tests
+python tests/test_telegram.py                   # bot tests (fake Telegram server)
+python tests/test_research_features.py          # MKT, WHO limits, intervals, AI assistant (fake Anthropic server)
 python bridge.py --demo --db sqlite:///pulse_rx.db
 streamlit run dashboard.py                      # or: uvicorn app:app ; python bridge.py --serial COM5 --api http://localhost:8000
 ```
@@ -44,7 +45,15 @@ streamlit run dashboard.py                      # or: uvicorn app:app ; python b
 Pushes a message + map pin on every stage change (AGING / CRITICAL) and on LOST, RECOVERED, ANOMALY, BATT_LOW, RESTART:
 box id, product, stage + time in stage, temperature, predicted remaining shelf life (and date), last heard, battery/RSSI,
 packets missed, restart count, receiver location (name, Google-Maps link, Telegram location pin) and the recommended action.
-Commands: `/start <passcode>`, `/stop`, `/status`, `/box <id>`, `/where <id>`, `/dispatch`, `/alerts`, `/help`.
+**Research basis and what changed: see `RESEARCH.md`.**
+AI assistant: `/ask <question>` (Claude, read-only tools; set `ANTHROPIC_API_KEY`, optional `PULSE_LLM_MODEL`, `PULSE_LLM_PER_HOUR`). Vaccine boxes get WHO-limit FREEZE / HEAT_LIMIT alerts - set the tag's `sensor_type` to 2 (0.5 °C steps from -40 °C) so sub-zero temperatures are visible.
+Commands: `/start <passcode>`, `/stop`, `/status`, `/box <id>`, `/where <id>`, `/product <id> <dairy|frozen|vaccine|packaged>`, `/dispatch`, `/alerts`, `/help`.
+* **Acknowledge + escalation:** CRITICAL / LOST / ANOMALY alerts have a ✅ Acknowledge button. Unacknowledged after `PULSE_ESCALATE_MIN` (15) minutes -> re-sent as ESCALATION, up to `PULSE_ESCALATE_MAX` (3) times. Anyone subscribed can acknowledge; everyone is told who did.
+* **Burst grouping:** `PULSE_GROUP_MIN` (4) or more same-kind alerts in one batch (e.g. a truck going CRITICAL) become one message with one map pin per receiver.
+* **Daily digest:** set `PULSE_DIGEST_HOUR` (local hour, e.g. 8).
+* **Per-box product:** remaining shelf life depends on the product; `/product` changes it and recalculates immediately (stored in the DB).
+* **API key:** set `PULSE_API_KEY`; every API endpoint except `/health` then needs header `X-API-Key`. `bridge.py` sends it automatically from the same variable.
+* **Faster lost-tag rule:** tags in AGING/CRITICAL repeat every <=5 min, so 30 min of silence flags LOST (FRESH tags keep the 2-heartbeat rule). Mirrored in `tag_table.v` (`LOST_TIMEOUT_ALERT`).
 Tags have no GPS: "location" = the receiver that last heard the box. Describe receivers in `gateways.json` and pass the
 receiver id on ingest (`bridge.py --gateway cold-room-1`, or `"gateway"` in the API body).
 Setup (PowerShell): create a bot with @BotFather, then
@@ -54,7 +63,7 @@ Tested against a fake Telegram server (`tests/test_telegram.py`); not yet agains
 
 ## Verification status (be precise about what has and has not been run)
 Run and passing (in the authoring environment):
-* `python backend/tests/test_core.py` - 13/13: CRC check value 0x29B1, bit-exact match to the tag's CRC function, all single-bit errors rejected, rules, restart/ack logic, lost/recovered, DB restore, UART resync, end-to-end 4-tag fleet (excursion -> CRITICAL, dead tag -> LOST, FEFO order).
+* `python backend/tests/test_core.py` - 15/15, `test_telegram.py` 12/12 (fake Telegram server), `test_research_features.py` 10/10 (fake Anthropic server): CRC check value 0x29B1, bit-exact match to the tag's CRC function, all single-bit errors rejected, rules, restart/ack logic, lost/recovered, DB restore, UART resync, end-to-end 4-tag fleet (excursion -> CRITICAL, dead tag -> LOST, FEFO order).
 * `python sim/rtl_twin.py` - cycle-level Python twin of `rx_bit_sync` + `pkt_rx` on an asynchronous clock: 200/200 frames decoded at 0 / +-0.3 % clock offset (16x) and up to +-1.5 % (16x) / +-2 % (64x); 50/50 single-bit errors rejected with 0 wrong accepts; 0 false packets from 2000 random frames. This twin found and drove the fix for a real false-lock bug (1-3 % frame loss in noise) in the first RTL draft.
 
 NOT run here (no Verilog simulator / network in the authoring sandbox):
@@ -65,5 +74,4 @@ NOT run here (no Verilog simulator / network in the authoring sandbox):
 ## Known limits / honest notes
 * ML: trained on **synthetic** Q10 data. On held-out synthetic profiles the learned correction cuts error ~15 % vs physics-only; this says nothing about real products. Re-train with real data (`ShelfLifeModel.fit`). Temperature code -> deg C is assumed 1:1 (`decode_temp`).
 * The tag's frame is 8-bit preamble + 7 payload bytes (incl. seq) + CRC. Slide 6 / Fig 2a shows a 16-bit preamble and no seq field - the RTL is the source of truth; fix the slide.
-* Tags in alert mode are only declared LOST after 12 h silence (same constant as RTL); add a shorter silence rule if you need faster detection for CRITICAL units.
 * Receiver never transmits; it cannot ack/retry tag packets (tag is TX-only except write-link).
