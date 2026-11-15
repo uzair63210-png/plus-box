@@ -4,13 +4,14 @@
 //  * tracks latched stage per tag (stage never goes backwards, except after an
 //    authenticated restart which the tag announces with ack_flag)
 //  * counts missed packets from seq gaps (collision statistics)
-//  * flags a tag LOST when nothing is heard for LOST_TIMEOUT seconds
-//    (default 2 x (6 h heartbeat + max jitter))
+//  * flags a tag LOST when nothing is heard for LOST_TIMEOUT s (FRESH: 2 x (6 h heartbeat + jitter))
+//    or LOST_TIMEOUT_ALERT s (AGING/CRITICAL tags repeat every <=300 s, so 30 min of silence is a failure)
 // status = {stage[1:0], sensor_type[2:0], batt_low, query_flag, ack_flag}
 module tag_table #(
     parameter N            = 16,
     parameter SEC_DIV      = 6553600,    // clk cycles per second (6.5536 MHz clk)
-    parameter LOST_TIMEOUT = 43800)(     // seconds
+    parameter LOST_TIMEOUT = 43800,      // seconds, FRESH tags: 2 x (6 h + jitter)
+    parameter LOST_TIMEOUT_ALERT = 1800)(// seconds, AGING/CRITICAL tags repeat every <=300 s
     input clk, rst_n,
     input pkt_valid, input [31:0] pkt_id, input [7:0] pkt_status, pkt_sample, pkt_seq,
     output reg        evt_valid,
@@ -74,7 +75,7 @@ module tag_table #(
                     st <= S_LOOK;
                 end else begin
                     // lost-tag scanner: one slot per idle clock
-                    if (t_valid[ptr] && !t_lost[ptr] && ((now - t_seen[ptr]) >= LOST_TIMEOUT)) begin
+                    if (t_valid[ptr] && !t_lost[ptr] && ((now - t_seen[ptr]) >= ((t_stage[ptr] != 2'd0) ? LOST_TIMEOUT_ALERT : LOST_TIMEOUT))) begin
                         t_lost[ptr] <= 1;
                         cnt_lost <= cnt_lost + 8'd1;
                         evt_valid<=1; evt_code<=E_LOST; evt_id<=t_id[ptr];

@@ -7,6 +7,7 @@ module pulse_rx_top #(
     parameter CLKS_PER_BIT   = 1600,     // clk cycles per 4.096 kbps bit (6.5536 MHz clk)
     parameter SEC_DIV        = 6553600,  // clk cycles per second
     parameter LOST_TIMEOUT   = 43800,    // s: 2 x (6 h + jitter)
+    parameter LOST_TIMEOUT_ALERT = 1800, // s: AGING/CRITICAL tags (repeat <= 300 s)
     parameter N_TAGS         = 16,
     parameter CLKS_PER_BAUD  = 57)(      // 6.5536 MHz / 115200
     input  clk, rst_n,
@@ -37,7 +38,8 @@ module pulse_rx_top #(
     always @(posedge clk or negedge rst_n)
         if (!rst_n) rssi_lat <= 0; else if (sync_hit) rssi_lat <= rssi_in;
 
-    tag_table #(.N(N_TAGS), .SEC_DIV(SEC_DIV), .LOST_TIMEOUT(LOST_TIMEOUT)) u_tbl (
+    tag_table #(.N(N_TAGS), .SEC_DIV(SEC_DIV), .LOST_TIMEOUT(LOST_TIMEOUT),
+                     .LOST_TIMEOUT_ALERT(LOST_TIMEOUT_ALERT)) u_tbl (
         .clk(clk), .rst_n(rst_n),
         .pkt_valid(pkt_valid), .pkt_id(box_id), .pkt_status(status),
         .pkt_sample(sample), .pkt_seq(seq),
